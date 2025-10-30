@@ -50,8 +50,7 @@ def main():
         logger.info(f"[CREATE] {item.get('name')}")
 
     for item in to_update:
-        for i in item[0]:
-            logger.info(f"[UPDATE] {i.get('name')}")
+        logger.info(f"[UPDATE] {item[0].get('name')}")
 
     for item in to_delete:
         logger.info(f"[DELETE] {item.get('name')}")

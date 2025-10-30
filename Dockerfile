@@ -34,6 +34,4 @@ COPY . /app
 
 WORKDIR /app
 
-RUN source .env
-
 CMD ["python", "./src/run.py"]
