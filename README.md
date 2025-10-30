@@ -14,4 +14,4 @@ Implement logic to actually implement the changes (edit, create, delete) using t
 
 # Disclaimer
 
-This is experimental software. It's use is not recommended, and any data loss resulted by using it cannot be blamed on the creators or contributors of this repository. Use at your own risk.
+This is experimental software. Its use is not recommended, and any data loss resulted by using it cannot be blamed on the creators or contributors of this repository. Use at your own risk.
