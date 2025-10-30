@@ -1,14 +1,15 @@
 import logging
 import hashlib
+import json
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
 from bw_client import BitwardenClient
 
 logger = logging.getLogger(__name__)
 
 SYNC_FIELD = "sync_id"
 IGNORED_FIELDS = {"id", "revisionDate", "creationDate", "deletedDate", "organizationId", SYNC_FIELD}
-
+VOLATILE_LOGIN_KEYS = {"passwordRevisionDate", "totp"}
 
 class SyncPlanner:
     def __init__(self, source_client: BitwardenClient, destination_client: BitwardenClient, max_workers: int = 8):
@@ -59,26 +60,76 @@ class SyncPlanner:
     # Comparison logic
     # -------------------------------------------------
     def _normalize_item(self, item: dict) -> dict:
-        """Return a normalized version of an item (without IDs and volatile metadata)."""
-        clean = {
-            k: v for k, v in item.items() if k not in IGNORED_FIELDS
-        }
-        # Sort URIs and fields for consistency
-        if "login" in clean and isinstance(clean["login"], dict):
-            login = clean["login"].copy()
-            if "uris" in login and isinstance(login["uris"], list):
-                login["uris"] = sorted(login["uris"], key=lambda x: x.get("uri", ""))
+        """Return a deeply normalized version of an item for stable but precise comparison."""
+        clean = copy.deepcopy(item)
+
+        # Drop ignored top-level keys
+        for k in list(clean.keys()):
+            if k in IGNORED_FIELDS:
+                clean.pop(k, None)
+
+        # --- Normalize login
+        login = clean.get("login")
+        if isinstance(login, dict):
+            for k in list(login.keys()):
+                if k in VOLATILE_LOGIN_KEYS:
+                    login.pop(k, None)
+            # Normalize URIs deterministically
+            uris = login.get("uris")
+            if isinstance(uris, list):
+                norm_uris = []
+                for u in uris:
+                    if not isinstance(u, dict):
+                        continue
+                    normalized_uri = {
+                        "uri": (u.get("uri") or "").strip().lower(),
+                        "match": u.get("match", 0),  # default match=0 if missing
+                        "port": u.get("port", None),
+                    }
+                    norm_uris.append(normalized_uri)
+                # Sort deterministically by URI and then by match
+                login["uris"] = sorted(norm_uris, key=lambda x: (x["uri"], x.get("match", 0)))
             clean["login"] = login
-        if "fields" in clean and isinstance(clean["fields"], list):
-            clean["fields"] = sorted(clean["fields"], key=lambda f: f.get("name", ""))
+
+        # --- Normalize custom fields
+        fields = clean.get("fields")
+        if isinstance(fields, list):
+            filtered = [f for f in fields if f.get("name") != SYNC_FIELD]
+            for f in filtered:
+                if "value" in f and f["value"] is None:
+                    f["value"] = ""
+            clean["fields"] = sorted(filtered, key=lambda f: f.get("name", ""))
+
+        # --- Normalize notes and text
+        if clean.get("notes") is None:
+            clean["notes"] = ""
+
+        # --- Normalize all None values deeply
+        def normalize_values(obj):
+            if isinstance(obj, dict):
+                return {k: normalize_values(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [normalize_values(v) for v in obj]
+            elif obj is None:
+                return ""
+            return obj
+
+        clean = normalize_values(clean)
         return clean
 
     def _items_differ(self, src: dict, dst: dict) -> bool:
-        """Return True if two decrypted Bitwarden items differ (ignoring UUIDs and sync_id field)."""
         src_norm = self._normalize_item(src)
         dst_norm = self._normalize_item(dst)
 
-        return src_norm != dst_norm
+        src_json = json.dumps(src_norm, sort_keys=True, separators=(",", ":"))
+        dst_json = json.dumps(dst_norm, sort_keys=True, separators=(",", ":"))
+
+        if src_json != dst_json:
+            logger.debug(f"🧩 Difference detected for {src.get('name')}")
+            logger.debug(f"SRC: {src_json}")
+            logger.debug(f"DST: {dst_json}")
+            return True
+        return False
 
     # -------------------------------------------------
     # Fuzzy matching (parallel)
